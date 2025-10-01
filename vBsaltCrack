@@ -1,0 +1,168 @@
+#!/bin/bash
+# simple script to save your time on file operations while cracking vBulletin < 3.8.5 hashes without salts using hashcat
+# popular types of vBulletin salt - ?a?a?a, ?h?h?h?h?h?h, ?d?d?d?d?d
+# download hashgen - https://github.com/cyclone-github/hashgen (used to convert $[HEX] hashes with colon-containing salts and generating hashed wordlist)
+
+# Function to read file paths with validation
+read_file_path() {
+    local prompt="$1"
+    local result_var="$2"
+    local path
+
+    while true; do
+        read -r -p "$prompt" path
+        if [ -f "$path" ]; then
+            # Use eval to set the variable passed by name
+            eval "$result_var=\"$path\""
+            break
+        else
+            echo "ERROR: File not found: $path. Please try again."
+        fi
+    done
+}
+
+# Function to read an output path (file may not exist yet). Create parent dir if needed.
+read_output_path() {
+    local prompt="$1"
+    local result_var="$2"
+    local path
+    local default="$3"
+
+    while true; do
+        # if default provided, show it
+        if [ -n "$default" ]; then
+            read -r -p "$prompt [$default]: " path
+            if [ -z "$path" ]; then
+                path="$default"
+            fi
+        else
+            read -r -p "$prompt" path
+        fi
+
+        # Expand tilde
+        path="${path/#\~/$HOME}"
+
+        # get parent dir
+        parent_dir=$(dirname "$path")
+
+        # If parent dir doesn't exist, ask whether to create it (auto-create)
+        if [ ! -d "$parent_dir" ]; then
+            echo "Directory $parent_dir does not exist. Creating it..."
+            if mkdir -p "$parent_dir"; then
+                echo "Created $parent_dir"
+                eval "$result_var=\"$path\""
+                break
+            else
+                echo "ERROR: Failed to create directory $parent_dir. Please try again."
+            fi
+        else
+            # parent dir exists; accept path
+            eval "$result_var=\"$path\""
+            break
+        fi
+    done
+}
+
+echo "--- Interactive vBulletin Salt Cracker Configuration ---"
+
+# --- Input Acquisition ---
+# 1. Hash list path
+read_file_path "Enter the path to the hash list (e.g., hashlists/main.txt): " HASHLIST_PATH
+
+# 2. Wordlist path
+read_file_path "Enter the path to the wordlist (e.g., wordlists/top1000.txt): " WORDLIST_PATH
+
+# 3. Mask (optional, with default value)
+read -r -p "Enter the mask for salt cracking (e.g., ?h?h?h?h?h?h) [Default: ?a?a?a]: " CRACKING_MASK
+if [ -z "$CRACKING_MASK" ]; then
+    CRACKING_MASK="?a?a?a"
+fi
+
+# 4. Final output file path for cracked hashes (new interactive option)
+DEFAULT_FINAL_OUTPUT="2611_cracked.txt"
+read_output_path "Enter the final output path for cracked hashes (e.g., results/2611_cracked.txt)" FINAL_OUTPUT_PATH "$DEFAULT_FINAL_OUTPUT"
+
+# Generate dynamic paths
+WORDLIST_BASENAME=$(basename "$WORDLIST_PATH")
+HASHED_WORDLIST_PATH="md5_wordlists/${WORDLIST_BASENAME}.md5"
+
+echo "--- Settings Confirmed ---"
+echo "Hash List: $HASHLIST_PATH"
+echo "Word List: $WORDLIST_PATH"
+echo "Mask: $CRACKING_MASK"
+echo "Hashed Word List Output: $HASHED_WORDLIST_PATH"
+echo "Final cracked output: $FINAL_OUTPUT_PATH"
+echo "------------------------------"
+sleep 2s
+
+# --- Tool Verification ---
+if ! command -v hashcat &> /dev/null; then
+    echo "ERROR: hashcat not found. Ensure it is in your PATH."
+    exit 1
+fi
+
+if [ ! -f ./hashgen ]; then
+    echo "ERROR: The ./hashgen file was not found. Ensure it is in the current directory and is executable."
+    exit 1
+fi
+
+# --- STEP 1: Potfile Cleanup ---
+echo "--- STEP 1: Cleaning potfile ---"
+if [ -f "hashed.pot" ]; then
+    echo "Creating backup: hashed.pot -> hashed.pot.bak"
+    cat hashed.pot >> hashed.pot.bak 2>/dev/null
+else
+    echo "hashed.pot not found, skipping backup."
+fi
+echo '' > hashed.pot
+sleep 3s
+
+# --- STEP 2: Generate Hashed Wordlist ---
+echo "--- STEP 2: Generating hashed wordlist ---"
+mkdir -p md5_wordlists
+./hashgen -m 0 -w "$WORDLIST_PATH" -o "$HASHED_WORDLIST_PATH"
+sleep 3s
+
+# --- STEP 3: Crack Salts ---
+echo "--- STEP 3: Cracking salts (Mode -m0 -a6) ---"
+hashcat -d1 -m0 -a6 -w4 --hwmon-temp-abort=95 --potfile-path=hashed.pot "$HASHLIST_PATH" "$HASHED_WORDLIST_PATH" "$CRACKING_MASK" --remove
+sleep 3s
+
+# --- STEP 4: Prepare Hashes for Wordlist Cracking ---
+echo "--- STEP 4: Preparing hashes for cracking (m2611 format) ---"
+sleep 3s
+
+# 1. Process NON-HEX lines (already cracked passwords)
+# Corrected format: HASH:PLAINTEXT (Single colon)
+grep -v HEX hashed.pot | sed 's/^\(.\{65\}\)/\1:/' | cut -d: -f1,3 | sed -E 's/^(.{32}):(.*)$/\1:\2/' > 2611_to_crack.txt
+sleep 3s
+echo "Converting HEX strings"
+
+# 2. Convert HEX strings
+grep HEX hashed.pot | cut -d: -f2 > hex.tmp
+grep HEX hashed.pot | cut -d: -f1 > hash.txt
+./hashgen -m plaintext -w hex.tmp -o hex.txt
+sleep 3s
+
+# 3. Combine HEX hashes and append to 2611_to_crack.txt
+# Corrected format: HASH:HEX_SALT (Single colon)
+paste -d : hash.txt hex.txt | sed -E 's/^(.{32}):(.*)$/\1:\2/' >> 2611_to_crack.txt
+sleep 3s
+echo "Deleting temporary files"
+
+# 4. Remove temporary files
+rm -f ./{hash.txt,hex.txt,hex.tmp}
+sleep 3s
+
+# --- STEP 5: Crack Hashes with Wordlist (Mode -m2611) ---
+echo "--- STEP 5: Cracking hashes with wordlist -a0 -m2611 ---"
+hashcat -d1 -m2611 -a0 -w4 --potfile-path=hashcat.pot.salted 2611_to_crack.txt "$WORDLIST_PATH"
+sleep 3s
+
+# --- STEP 6: Export Cracked Hashes ---
+echo "--- STEP 6: Writing/Appending last cracked hashes into file ---"
+# Use FINAL_OUTPUT_PATH chosen above
+hashcat -d1 -m2611 -a0 -w4 -O --hwmon-temp-abort=95 --hwmon-disable --potfile-path=hashcat.pot.salted 2611_to_crack.txt --show > "$FINAL_OUTPUT_PATH"
+sleep 3s
+
+echo "Done. Final cracked hashes saved to: $FINAL_OUTPUT_PATH"
