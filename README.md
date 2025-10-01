@@ -1,7 +1,5 @@
 # vBsaltCrack
-vBulletin Salt Cracker Script
-
-**vBulletin salt-cracking helper script**
+**vBulletin Salt Cracker Script**
 
 An interactive Bash helper that automates pre‑processing and two‑stage cracking of vBulletin < 3.8.5 MD5-based passwords (unsalted and salted forms) using hashgen and hashcat, then writes the final recovered credentials to a user‑specified file.
 
